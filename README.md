@@ -1,0 +1,54 @@
+# 📚 Guideline Reference Extractor
+
+App web para extraer, enriquecer y clasificar referencias de guías clínicas en PDF.
+
+## Qué hace
+
+1. **Extrae** todas las referencias de un PDF de guía clínica (ESC, ACC/AHA u otras)
+2. **Enriquece** con metadatos: PMID, DOI, autores, año, revista (vía PubMed + CrossRef)
+3. **Clasifica** automáticamente: ECA primario, ECA secundario, meta-análisis, registro, guía
+4. **Exporta** un Excel con 4 hojas: base completa, ECAs primarios, resumen, instrucciones
+
+## Despliegue en Streamlit Cloud (gratis, sin código)
+
+### Paso 1 — Subir a GitHub
+1. Crear cuenta en [github.com](https://github.com/signup)
+2. Crear nuevo repositorio (botón `+` → `New repository`)
+3. Subir estos 3 archivos: `app.py`, `pipeline.py`, `requirements.txt`
+
+### Paso 2 — Conectar con Streamlit Cloud
+1. Ir a [share.streamlit.io](https://share.streamlit.io)
+2. Iniciar sesión con tu cuenta de GitHub
+3. Clic en **"New app"**
+4. Seleccionar tu repositorio y rama (`main`)
+5. En **"Main file path"** escribir: `app.py`
+6. Clic en **"Deploy!"**
+
+En 2-3 minutos tendrás una URL pública tipo:
+`https://tu-usuario-guideline-extractor.streamlit.app`
+
+## Archivos del repositorio
+
+```
+├── app.py              # Interfaz Streamlit
+├── pipeline.py         # Motor de extracción y enriquecimiento
+├── requirements.txt    # Dependencias Python
+└── README.md           # Este archivo
+```
+
+## Uso local (opcional)
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## Notas
+
+- Sin API key de NCBI el límite es 3 req/s (automáticamente respetado)
+- Para guías grandes (>300 referencias) el procesamiento puede tardar 15-30 min
+- La clasificación automática tiene ~80-90% de precisión; la columna "Tipo (manual)" permite correcciones
+
+## Basado en
+
+Mas-Llado C et al. *Representativeness in randomised clinical trials supporting acute coronary syndrome guidelines.* Eur Heart J Qual Care Clin Outcomes. 2023;9:796-805. https://doi.org/10.1093/ehjqcco/qcad007
