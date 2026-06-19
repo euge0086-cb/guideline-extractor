@@ -110,56 +110,53 @@ def extract_references_from_pdf(pdf_path: str) -> list[str]:
 # MÓDULO 2: ENRIQUECIMIENTO VÍA APIs
 # ─────────────────────────────────────────────
 
-def search_pubmed(query: str) -> dict:
-    """Busca en PubMed y devuelve PMID + metadatos básicos."""
+def search_pubmed(query: str, api_key: str = "") -> dict:
+    """Busca en PubMed: PMID + metadatos + Publication Types oficiales."""
     base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-    
-    # Buscar PMID
-    search_url = f"{base}esearch.fcgi"
     params = {"db": "pubmed", "term": query, "retmax": 1, "retmode": "json"}
+    if api_key: params["api_key"] = api_key
     try:
-        r = requests.get(search_url, params=params, timeout=10)
+        r = requests.get(f"{base}esearch.fcgi", params=params, timeout=10)
         ids = r.json().get("esearchresult", {}).get("idlist", [])
-        if not ids:
-            return {}
+        if not ids: return {}
         pmid = ids[0]
-        
-        # Obtener metadatos
-        fetch_url = f"{base}efetch.fcgi"
         fetch_params = {"db": "pubmed", "id": pmid, "retmode": "xml", "rettype": "abstract"}
-        rf = requests.get(fetch_url, params=fetch_params, timeout=10)
+        if api_key: fetch_params["api_key"] = api_key
+        rf = requests.get(f"{base}efetch.fcgi", params=fetch_params, timeout=10)
         xml = rf.text
-        
-        # Parsear campos clave del XML
         def extract_xml(tag, text):
             m = re.search(rf'<{tag}[^>]*>(.*?)</{tag}>', text, re.DOTALL)
             return m.group(1).strip() if m else ""
-        
-        title = extract_xml("ArticleTitle", xml)
-        year = extract_xml("Year", xml) or extract_xml("MedlineDate", xml)[:4]
-        journal = extract_xml("Title", xml)  # Journal Title
-        
-        # Autores
+        title   = extract_xml("ArticleTitle", xml)
+        year    = extract_xml("Year", xml) or extract_xml("MedlineDate", xml)[:4]
+        journal = extract_xml("Title", xml)
         authors_raw = re.findall(r'<LastName>(.*?)</LastName>.*?<ForeName>(.*?)</ForeName>', xml, re.DOTALL)
         authors = ", ".join([f"{ln} {fn[0]}." for ln, fn in authors_raw[:3]])
-        if len(authors_raw) > 3:
-            authors += " et al."
-        
-        # DOI desde PubMed
+        if len(authors_raw) > 3: authors += " et al."
         doi_m = re.search(r'<ArticleId IdType="doi">(.*?)</ArticleId>', xml)
         doi = doi_m.group(1).strip() if doi_m else ""
-        
-        return {
-            "pmid": pmid,
-            "doi": doi,
-            "title": title,
-            "year": year[:4] if year else "",
-            "journal": journal,
-            "authors": authors,
-            "source": "PubMed"
-        }
-    except Exception as e:
+        pub_types  = re.findall(r'<PublicationType[^>]*>(.*?)</PublicationType>', xml)
+        mesh_terms = re.findall(r'<DescriptorName[^>]*>(.*?)</DescriptorName>', xml)
+        return {"pmid": pmid, "doi": doi, "title": title,
+                "year": year[:4] if year else "", "journal": journal,
+                "authors": authors, "pub_types": pub_types,
+                "mesh_terms": mesh_terms, "source": "PubMed"}
+    except:
         return {}
+
+
+def fetch_pubtypes_by_pmid(pmid: str, api_key: str = "") -> tuple:
+    """Obtiene Publication Types y MeSH de PubMed dado un PMID ya conocido."""
+    base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    params = {"db": "pubmed", "id": pmid, "retmode": "xml", "rettype": "abstract"}
+    if api_key: params["api_key"] = api_key
+    try:
+        r = requests.get(base, params=params, timeout=10)
+        pub_types  = re.findall(r'<PublicationType[^>]*>(.*?)</PublicationType>', r.text)
+        mesh_terms = re.findall(r'<DescriptorName[^>]*>(.*?)</DescriptorName>', r.text)
+        return pub_types, mesh_terms
+    except:
+        return [], []
 
 
 def search_crossref(ref_text: str) -> dict:
@@ -249,34 +246,46 @@ def enrich_reference(ref_text: str, idx: int) -> dict:
         "pubmed_url": "",
         "doi_url": "",
         "source_api": "",
+        "pub_types": [],    # Publication Types oficiales de PubMed
+        "mesh_terms": [],   # MeSH terms de PubMed
+        "pub_type_raw": "", # Tipo CrossRef
         "notes": ""
     }
 
     time.sleep(0.35)  # Respetar rate limit NCBI (3 req/s sin API key)
 
-    # 1. Intentar CrossRef primero (más tolerante a texto libre)
+    # 1. CrossRef primero (más tolerante a texto libre)
     cr = search_crossref(ref_text)
     if cr:
-        record.update({k: v for k, v in cr.items() if v and k in record})
+        for k, v in cr.items():
+            if v and k in record:
+                record[k] = v
         record["source_api"] = "CrossRef"
 
-    # 2. Buscar en PubMed para obtener PMID
+    # 2. PubMed para PMID + Publication Types (clave para clasificación)
     query = build_pubmed_query(ref_text)
     if query:
         time.sleep(0.35)
         pm = search_pubmed(query)
         if pm:
-            # PubMed tiene prioridad para PMID y puede complementar datos
             if pm.get("pmid"):
                 record["pmid"] = pm["pmid"]
                 record["pubmed_url"] = f"https://pubmed.ncbi.nlm.nih.gov/{pm['pmid']}/"
-            # Rellenar campos vacíos con datos de PubMed
             for k in ["doi", "title", "authors", "year", "journal"]:
                 if not record[k] and pm.get(k):
                     record[k] = pm[k]
+            # Guardar Publication Types y MeSH para el clasificador
+            record["pub_types"]  = pm.get("pub_types", [])
+            record["mesh_terms"] = pm.get("mesh_terms", [])
             record["source_api"] = "PubMed+CrossRef" if cr else "PubMed"
 
-    # Construir URL de DOI
+    # 3. Si ya tenemos PMID pero no pub_types (vino solo de CrossRef), buscarlos
+    if record["pmid"] and not record["pub_types"]:
+        time.sleep(0.35)
+        pt, mt = fetch_pubtypes_by_pmid(record["pmid"])
+        record["pub_types"]  = pt
+        record["mesh_terms"] = mt
+
     if record["doi"]:
         record["doi_url"] = f"https://doi.org/{record['doi']}"
 
@@ -290,48 +299,135 @@ def enrich_reference(ref_text: str, idx: int) -> dict:
 # Palabras clave para clasificación por tipo de estudio
 CLASSIFICATION_RULES = {
     "RCT_primario": [
-        r'\brandomis[ei]d\b', r'\bplacebo.controlled\b', r'\bblind(ed)?\b',
+        r'\brandomis[ei]d\b', r'\bplacebo.controlled\b',
+        r'\bdouble.blind\b', r'\bsingle.blind\b',
         r'\brandom(ized|ised)\s+(clinical|controlled)\s+trial\b',
         r'\bRCT\b', r'\bensayo\s+cl[ií]nico\b', r'\brandomizado\b',
         r'\bprimary\s+(result|endpoint|outcome)\b',
+        # Nombres de trials clásicos en texto crudo
+        r'\bPURSUIT\b', r'\bPRISM\b', r'\bTIMI\s+III\b', r'\bGUSTO\b',
+        r'\bCURE\b', r'\bACUITY\b', r'\bTRILOGY\b', r'\bPLATO\b',
+        r'\bBRILLIANT\b', r'\bTARGET\b', r'\bSYNERGY\b',
+        r'\btrial\b.*\bplacebo\b', r'\bversus\b.*\bplacebo\b',
     ],
     "RCT_secundario": [
         r'\bsubgroup\s+anal', r'\bpost.hoc\b', r'\bsecondary\s+anal',
         r'\bsub-?study\b', r'\bpre.specified\b', r'\bpost\s+hoc\b',
+        r'\bsubstudy\b', r'\bsub\s+analysis\b',
     ],
     "meta-analisis": [
         r'\bmeta.anal', r'\bsystematic\s+review\b', r'\bpooled\s+anal',
         r'\bsystematic\b.*\breview\b', r'\bmetaan[aá]lisis\b',
+        r'\bindividual\s+patient\s+data\b', r'\bnetwork\s+meta\b',
     ],
     "registro_observacional": [
         r'\bregist(ry|er|ro)\b', r'\bcohort\b', r'\bobservational\b',
         r'\bretrospective\b', r'\bprospective\s+(cohort|observational)\b',
-        r'\bepidemiolog\b',
+        r'\bepidemiolog\b', r'\bsurvey\b', r'\bpopulation.based\b',
+        r'\bdatabase\b', r'\bcross.sectional\b',
+        # Registros conocidos en texto crudo
+        r'\bGRACE\b', r'\bSWEDEHEART\b', r'\bNRMI\b', r'\bCRUSADE\b',
+        r'\bACTION\b.*\bregist', r'\bEHS\b', r'\bEURO\s*HEART\b',
+        r'\bNHANES\b', r'\bFRAMINGHAM\b',
     ],
     "guia_clinica": [
-        r'\bguideline\b', r'\brecommendation\b', r'\bconsensus\s+(statement|document)\b',
+        r'\bguidelines?\b', r'\brecommendations?\b',
+        r'\bconsensus\s+(statement|document|report)\b',
         r'\bgu[ií]a\s+(cl[ií]nica|de\s+pr[aá]ctica)\b',
+        r'\btask\s+force\b', r'\bwriting\s+(committee|group)\b',
+        r'\bpractice\s+guideline\b', r'\bexpert\s+consensus\b',
+        r'\bposition\s+(statement|paper)\b',
+        r'\bESC\s+guideline', r'\bACC.AHA\s+guideline',
+        r'\bACCF.AHA\s+guideline', r'\bAHA.ACC\s+guideline',
+        r'\bfocused\s+update\b', r'\bpolicy\s+statement\b',
+        r'\bscientific\s+statement\b',
     ],
+}
+
+# Mapeo de Publication Types de PubMed → categorías de la app
+PUBMED_TYPE_MAP = {
+    # ECA primario
+    "Randomized Controlled Trial":              "RCT_primario",
+    "Controlled Clinical Trial":                "RCT_primario",
+    "Clinical Trial, Phase III":                "RCT_primario",
+    "Clinical Trial, Phase IV":                 "RCT_primario",
+    "Multicenter Study":                        None,  # complementario, no definitivo
+    # ECA secundario
+    "Clinical Trial":                           None,  # demasiado genérico solo
+    # Meta-análisis
+    "Meta-Analysis":                            "meta-analisis",
+    "Systematic Review":                        "meta-analisis",
+    # Observacional / registro
+    "Observational Study":                      "registro_observacional",
+    "Multicenter Study":                        None,
+    # Guía clínica
+    "Practice Guideline":                       "guia_clinica",
+    "Guideline":                                "guia_clinica",
+    "Consensus Development Conference":         "guia_clinica",
+    "Consensus Development Conference, NIH":    "guia_clinica",
+    "Government Publications":                  None,
 }
 
 def classify_reference(record: dict) -> str:
     """
-    Clasifica una referencia según palabras clave en título y texto crudo.
-    Devuelve la clasificación como string.
+    Clasificación en 3 capas de precisión decreciente:
+    1. Publication Types oficiales de PubMed (más fiable)
+    2. Palabras clave en título + texto crudo + journal
+    3. Fallback por tipo CrossRef + vocabulario de intervención
     """
-    text_to_search = " ".join([
+
+    # ── CAPA 1: Publication Types de PubMed ─────────────────────────────
+    pub_types = record.get("pub_types", [])  # lista de strings de PubMed
+    if pub_types:
+        # Prioridad: RCT_secundario se detecta por combinación de tipos
+        type_str = " | ".join(pub_types)
+
+        # Subanálisis: Clinical Trial + sin "Randomized" = probable secundario
+        if any("Randomized" in t for t in pub_types):
+            if any(kw in type_str for kw in ["Subgroup", "Secondary", "Post-Hoc"]):
+                return "RCT_secundario"
+
+        # Meta-análisis y revisiones sistemáticas
+        if any(t in ("Meta-Analysis", "Systematic Review") for t in pub_types):
+            return "meta-analisis"
+
+        # Guías clínicas
+        if any(t in ("Practice Guideline", "Guideline",
+                     "Consensus Development Conference",
+                     "Consensus Development Conference, NIH") for t in pub_types):
+            return "guia_clinica"
+
+        # ECA primario
+        if any(t == "Randomized Controlled Trial" for t in pub_types):
+            return "RCT_primario"
+
+        # Observacional
+        if any(t in ("Observational Study",) for t in pub_types):
+            return "registro_observacional"
+
+    # ── CAPA 2: Palabras clave en todos los campos de texto ──────────────
+    text_to_search = " ".join(filter(None, [
         record.get("title", ""),
         record.get("ref_raw", ""),
-        record.get("pub_type_raw", "")
-    ]).lower()
+        record.get("pub_type_raw", ""),
+        record.get("journal", ""),
+        " ".join(record.get("mesh_terms", [])),
+    ]))
 
-    # Verificar primero RCT secundario antes que primario
-    for study_type in ["RCT_secundario", "meta-analisis", "guia_clinica", 
+    for study_type in ["RCT_secundario", "meta-analisis", "guia_clinica",
                         "registro_observacional", "RCT_primario"]:
-        patterns = CLASSIFICATION_RULES[study_type]
-        for pat in patterns:
+        for pat in CLASSIFICATION_RULES[study_type]:
             if re.search(pat, text_to_search, re.IGNORECASE):
                 return study_type
+
+    # ── CAPA 3: Fallback por vocabulario de intervención ─────────────────
+    if record.get("pub_type_raw") == "journal-article":
+        title = record.get("title", "")
+        for pat in [r'\beffect\s+of\b', r'\befficacy\b',
+                    r'\bsafety\s+and\s+efficacy\b', r'\bversus\b',
+                    r'\bcompar(ing|ison)\b', r'\bbenefit\s+of\b']:
+            if re.search(pat, title, re.IGNORECASE):
+                return "RCT_primario"
 
     return "otro/no_clasificado"
 
