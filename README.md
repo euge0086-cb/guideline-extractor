@@ -9,23 +9,6 @@ App web para extraer, enriquecer y clasificar referencias de guías clínicas en
 3. **Clasifica** automáticamente: ECA primario, ECA secundario, meta-análisis, registro, guía
 4. **Exporta** un Excel con 4 hojas: base completa, ECAs primarios, resumen, instrucciones
 
-## Despliegue en Streamlit Cloud (gratis, sin código)
-
-### Paso 1 — Subir a GitHub
-1. Crear cuenta en [github.com](https://github.com/signup)
-2. Crear nuevo repositorio (botón `+` → `New repository`)
-3. Subir estos 3 archivos: `app.py`, `pipeline.py`, `requirements.txt`
-
-### Paso 2 — Conectar con Streamlit Cloud
-1. Ir a [share.streamlit.io](https://share.streamlit.io)
-2. Iniciar sesión con tu cuenta de GitHub
-3. Clic en **"New app"**
-4. Seleccionar tu repositorio y rama (`main`)
-5. En **"Main file path"** escribir: `app.py`
-6. Clic en **"Deploy!"**
-
-En 2-3 minutos tendrás una URL pública tipo:
-`https://tu-usuario-guideline-extractor.streamlit.app`
 
 ## Archivos del repositorio
 
